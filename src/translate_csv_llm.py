@@ -21,6 +21,19 @@ class TranslationItem(BaseModel):
 class TranslationResult(BaseModel):
     translations: List[TranslationItem]
 
+# Cache
+class TranslationCache:
+    def __init__(self):
+        self._cache = {}
+
+    def get(self, record_type: str, text: str):
+        return self._cache.get((record_type, text))
+
+    def set(self, record_type: str, text: str, translated: str):
+        self._cache[(record_type, text)] = translated
+
+    def size(self):
+        return len(self._cache)
 
 # GPT-API初期化
 LLM_MODEL = CONFIG["LLM"].get("LLM_MODEL")
@@ -74,7 +87,7 @@ def translate_with_retry(pipeline, input_items, record_type, batch_no, token_bat
 
 
 
-def call_llm_api_batch(text_list, record_type, batch_no):
+def call_llm_api_batch(text_list, record_type, batch_no, translation_cache):
     safe_text_list = normalize_text_list(text_list)
 
     # ==== 全件空チェック ====
@@ -85,17 +98,35 @@ def call_llm_api_batch(text_list, record_type, batch_no):
 
     # 全件空 → API呼び出ししない
     if not non_empty_items:
-        #print(
-        #    f"[DEBUG] Type={record_type} Batch={batch_no} "
-        #    "全件空 → API呼び出しスキップ"
-        #)
         return [""] * len(safe_text_list)
 
-    # ==== ID付き入力生成 ====
+    # ==== キャッシュ確認 ====
+    translated_map = {}
+    uncached_items = []
+
+    for i, t in non_empty_items:
+        cached = translation_cache.get(record_type, t)
+        if cached is not None:
+            translated_map[i] = cached
+        else:
+            uncached_items.append((i, t))
+
+    # 全件キャッシュヒット→API呼び出しせず、Cacheの翻訳を使う
+    if not uncached_items and len(translated_map) == len(non_empty_items):
+        results = []
+        for i, text in enumerate(safe_text_list):
+            if text.strip() == "":
+                results.append("")
+            else:
+                results.append(translated_map.get(i))
+        return results
+
+    # ==== ID付き入力生成（未キャッシュのみ） ====
     input_items = [
         {"id": i, "text": t}
-        for i, t in non_empty_items
+        for i, t in uncached_items
     ]
+    original_id_text = {i: t for i, t in uncached_items}
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", CONFIG["LLM"].get("SYSTEM_PROMPT")),
@@ -104,17 +135,11 @@ def call_llm_api_batch(text_list, record_type, batch_no):
 
     pipeline = prompt | STRUCTURED_LLM
 
-    translated_map = {}
-
     # ==== TokenBatch分割（ID単位） ====
     for token_batch_no, item_batch in enumerate(
         chunk_by_token_limit(input_items, MAX_INPUT_TOKENS, LLM_MODEL),
         start=1
     ):
-        #print(
-        #    f"[DEBUG] Type={record_type} Batch={batch_no} "
-        #    f"TokenBatch={token_batch_no} items={len(item_batch)}"
-        #)
 
         result_map, failed_items = translate_with_retry(
             pipeline,
@@ -124,10 +149,16 @@ def call_llm_api_batch(text_list, record_type, batch_no):
             token_batch_no,
         )
 
-        translated_map.update(result_map)
+        # 結果格納
+        for id, text in result_map.items():
+            translated_map[id] = text
+            # キャッシュ保存
+            translation_cache.set(record_type, original_id_text[id], text)
 
+        # 失敗分は元文字列を出力
         for item in failed_items:
-            translated_map[item["id"]] = "[翻訳失敗: retry exhausted]"
+            original_text = item["text"]
+            translated_map[item["id"]] = f"[翻訳失敗: {original_text}]"
 
     # ==== 元の順序で復元 ====
     results = []
@@ -136,14 +167,15 @@ def call_llm_api_batch(text_list, record_type, batch_no):
             results.append("")
         else:
             results.append(
-                translated_map.get(i, "[翻訳失敗: unknown]")
+                translated_map.get(i, text)
             )
 
     return results
 
 
 
-def _process_one_batch(df, record_type, batch_items, batch_no):
+
+def _process_one_batch(df, record_type, batch_items, batch_no, translation_cache: TranslationCache):
     idx_chunk = [i for i, _ in batch_items]
     text_chunk = [t for _, t in batch_items]
 
@@ -157,7 +189,8 @@ def _process_one_batch(df, record_type, batch_items, batch_no):
     translated_chunk = call_llm_api_batch(
         text_chunk,
         record_type,
-        batch_no
+        batch_no,
+        translation_cache
     )
 
     for i, translated_text in zip(idx_chunk, translated_chunk):
@@ -174,6 +207,9 @@ def translate_csv_llm(csv_path: Path)->bool:
 
     df = pd.read_csv(csv_path)
     df["Translated"] = None
+
+    # Cache plugin単位（スレッドローカル）
+    translation_cache = TranslationCache()
 
     for record_type, group_df in df.groupby("type"):
         print(f"[INFO] {csv_path.name} Type処理開始: {record_type} 件数={len(group_df)}")
@@ -193,21 +229,21 @@ def translate_csv_llm(csv_path: Path)->bool:
                 if current_batch:
                     batch_no += 1
                     _process_one_batch(
-                        df, record_type, current_batch, batch_no
+                        df, record_type, current_batch, batch_no, translation_cache
                     )
                     current_batch = []
                     current_tokens = 0
 
                 batch_no += 1
                 _process_one_batch(
-                    df, record_type, [(idx, text)], batch_no
+                    df, record_type, [(idx, text)], batch_no, translation_cache
                 )
                 continue
 
             if current_tokens + text_tokens > MAX_INPUT_TOKENS:
                 batch_no += 1
                 _process_one_batch(
-                    df, record_type, current_batch, batch_no
+                    df, record_type, current_batch, batch_no, translation_cache
                 )
                 current_batch = [(idx, text)]
                 current_tokens = text_tokens
@@ -218,7 +254,7 @@ def translate_csv_llm(csv_path: Path)->bool:
         if current_batch:
             batch_no += 1
             _process_one_batch(
-                df, record_type, current_batch, batch_no
+                df, record_type, current_batch, batch_no, translation_cache
             )
 
         #print(f"[INFO] Type毎の処理完了: {record_type}")

@@ -55,8 +55,12 @@ def convert_csv_to_dsd(csv_path: Path, json_path: Path):
                 "status": "TranslationComplete"
             }
             data.append(item)
+    # Csvデータ行がすべて空の場合は何もしない
+    if not data:
+        return True
 
     # JSON 出力（UTF-8, インデント付き）
+    json_path.parent.mkdir(exist_ok=True)
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     
