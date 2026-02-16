@@ -3,10 +3,8 @@ from pathlib import Path
 import configparser
 import concurrent.futures
 
-from src.extract_strings_from_plugins import extract_save_csv
-from src.translate_csv_llm import translate_csv_llm
-from src.csv2dsd_converter import convert_csv_to_dsd
-from src.utility import resolve_input_dir, find_mod_plugins, get_runtime_base_path, get_Config_Parser, save_current_timestamps, load_previous_timestamps
+from src.utility import resolve_input_dir, find_mod_plugins_from_profile, get_runtime_base_path, get_Config_Parser, save_current_timestamps, load_previous_timestamps
+from src.select_profile_dialog import select_profile_dialog
 from main import process_plugin
 
 BASE_PATH: Path = get_runtime_base_path()
@@ -18,13 +16,18 @@ TIMESTAMP_FILE: Path = BASE_PATH.joinpath("plugin_timestamps.txt")
 CONFIG: configparser.ConfigParser = get_Config_Parser()
 
 def main():
-    default_data_dir = get_runtime_base_path() / "mods"
-    mods_dir = resolve_input_dir(sys.argv, default_data_dir)
+    input_base_dir = resolve_input_dir(sys.argv, get_runtime_base_path())
+    profile_dir = input_base_dir.joinpath("profiles")
+    selected_profile = select_profile_dialog(profile_dir)
+    if selected_profile is None:
+        print("[INFO] Profile selection cancelled.")
+        return
+    print(f"[INFO] Profile {selected_profile} selected.")
 
     CSV_DIR.mkdir(exist_ok=True)
     DSD_DIR.mkdir(exist_ok=True)
-
-    plugin_list = find_mod_plugins(mods_dir)
+    
+    plugin_list = find_mod_plugins_from_profile(input_base_dir, selected_profile)
 
     # 更新されたプラグインをリスト
     previous_timestamps = load_previous_timestamps(TIMESTAMP_FILE)
