@@ -32,6 +32,23 @@ def get_runtime_base_path() -> Path:
     else:
         return Path.cwd()
 
+def resolve_input_dir(argv: list[str], default_dir: Path) -> Path:
+    """
+    ドラッグ＆ドロップ、または引数指定、またはデフォルトフォルダを解決
+    """
+    if len(argv) < 2:
+        return default_dir
+
+    dropped_path = Path(argv[1]).resolve()
+
+    if dropped_path.is_dir():
+        return dropped_path
+
+    if dropped_path.is_file():
+        return dropped_path.parent
+
+    return default_dir
+
 def find_mod_plugins(root_dir: Path) -> list[Path]:
     """
     2 階層目までのプラグイン探索
@@ -198,4 +215,34 @@ def build_prompt_map(config: configparser.ConfigParser) -> Dict[str, str]:
 
     return prompt_map
 
+def save_current_timestamps(file_path: Path, plugins: list[Path]) -> None:
+    """
+    プラグインの更新日時を一覧で保存する
+    """
+    with open(file_path, "w", encoding="utf-8") as f:
+        for plugin in plugins:
+            try:
+                mtime = plugin.stat().st_mtime
+                f.write(f"{plugin.name}\t{mtime}\n")
+            except Exception:
+                continue
 
+def load_previous_timestamps(file_path: Path) -> dict[str, float]:
+    """
+    プラグインの更新日時を一覧で取得する
+    """
+    if not file_path.exists():
+        return {}
+
+    result = {}
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                name, ts = line.split("\t", 1)
+                result[name] = float(ts)
+            except ValueError:
+                continue
+    return result

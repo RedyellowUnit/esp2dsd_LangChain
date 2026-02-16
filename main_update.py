@@ -6,7 +6,8 @@ import concurrent.futures
 from src.extract_strings_from_plugins import extract_save_csv
 from src.translate_csv_llm import translate_csv_llm
 from src.csv2dsd_converter import convert_csv_to_dsd
-from src.utility import find_mod_plugins, get_runtime_base_path, resolve_input_dir, get_Config_Parser, save_current_timestamps
+from src.utility import resolve_input_dir, find_mod_plugins, get_runtime_base_path, get_Config_Parser, save_current_timestamps, load_previous_timestamps
+from main import process_plugin
 
 BASE_PATH: Path = get_runtime_base_path()
 CSV_DIR: Path = BASE_PATH.joinpath("Translated_Csv")
@@ -16,38 +17,6 @@ TIMESTAMP_FILE: Path = BASE_PATH.joinpath("plugin_timestamps.txt")
 # Config
 CONFIG: configparser.ConfigParser = get_Config_Parser()
 
-def process_plugin(plugin: Path) -> None:
-    """
-    単一プラグイン処理（並列実行対象）
-    文字列抽出→翻訳→DSD変換
-    """
-    try:
-        extract_result = extract_save_csv(plugin, CSV_DIR)
-        if not extract_result:
-            print(f"[Error] Failed to extract string from plugin: {plugin}")
-            return
-
-        csv_path = CSV_DIR.joinpath(f"{plugin.name}.csv").resolve()
-
-        translate_result = translate_csv_llm(csv_path)
-        if not translate_result:
-            print(f"[Error] Failed to translate plugin: {csv_path}")
-            return
-
-        json_path = DSD_DIR.joinpath(plugin.name, f"{plugin.name}.json")
-        json_path.parent.mkdir(exist_ok=True)
-
-        convert_result = convert_csv_to_dsd(csv_path, json_path)
-        if not convert_result:
-            print(f"[Error] Failed to convert csv to json: {json_path}")
-            return
-
-        print(f"[OK] Finished plugin: {plugin.name}")
-
-    except Exception as e:
-        print(f"[Exception] Plugin: {plugin.name} / {e}")
-
-
 def main():
     default_data_dir = get_runtime_base_path() / "mods"
     mods_dir = resolve_input_dir(sys.argv, default_data_dir)
@@ -56,9 +25,23 @@ def main():
     DSD_DIR.mkdir(exist_ok=True)
 
     plugin_list = find_mod_plugins(mods_dir)
+
+    # 更新されたプラグインをリスト
+    previous_timestamps = load_previous_timestamps(TIMESTAMP_FILE)
+    updated_plugins = []
+    for plugin in plugin_list:
+        try:
+            current_mtime = plugin.stat().st_mtime
+            previous_mtime = previous_timestamps.get(plugin.name)
+            if previous_mtime is None or current_mtime != previous_mtime:
+                updated_plugins.append(plugin)
+        except Exception:
+            continue
+    
+    # 除外プラグインをリスト
     exclude_plugins = CONFIG["GENERAL"].get("EXCLUDE_PLUGINS")
     filtered_plugins = [
-        plugin for plugin in plugin_list
+        plugin for plugin in updated_plugins
         if plugin.name not in exclude_plugins
     ]
     if not filtered_plugins:
@@ -77,7 +60,7 @@ def main():
             future.result()
 
     # プラグイン更新日時のリストのスナップショットをとる
-    save_current_timestamps(TIMESTAMP_FILE, filtered_plugins)
+    save_current_timestamps(TIMESTAMP_FILE, plugin_list)
 
 if __name__ == "__main__":
     main()
