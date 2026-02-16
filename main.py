@@ -6,7 +6,8 @@ import concurrent.futures
 from src.extract_strings_from_plugins import extract_save_csv
 from src.translate_csv_llm import translate_csv_llm
 from src.csv2dsd_converter import convert_csv_to_dsd
-from src.utility import find_mod_plugins, get_runtime_base_path, resolve_input_dir, get_Config_Parser, save_current_timestamps
+from src.utility import find_mod_plugins_from_profile, get_runtime_base_path, resolve_input_dir, get_Config_Parser, save_current_timestamps
+from src.select_profile_dialog import select_profile_dialog
 
 BASE_PATH: Path = get_runtime_base_path()
 CSV_DIR: Path = BASE_PATH.joinpath("Translated_Csv")
@@ -29,15 +30,13 @@ def process_plugin(plugin: Path) -> None:
 
         csv_path = CSV_DIR.joinpath(f"{plugin.name}.csv").resolve()
 
-        translate_result = translate_csv_llm(csv_path)
+        translate_result = True #translate_csv_llm(csv_path)
         if not translate_result:
             print(f"[Error] Failed to translate plugin: {csv_path}")
             return
 
         json_path = DSD_DIR.joinpath(plugin.name, f"{plugin.name}.json")
-        json_path.parent.mkdir(exist_ok=True)
-
-        convert_result = convert_csv_to_dsd(csv_path, json_path)
+        convert_result = True #convert_csv_to_dsd(csv_path, json_path)
         if not convert_result:
             print(f"[Error] Failed to convert csv to json: {json_path}")
             return
@@ -49,13 +48,18 @@ def process_plugin(plugin: Path) -> None:
 
 
 def main():
-    default_data_dir = get_runtime_base_path() / "mods"
-    mods_dir = resolve_input_dir(sys.argv, default_data_dir)
+    input_base_dir = resolve_input_dir(sys.argv, get_runtime_base_path())
+    profile_dir = input_base_dir.joinpath("profiles")
+    selected_profile = select_profile_dialog(profile_dir)
+    if selected_profile is None:
+        print("[INFO] Profile selection cancelled.")
+        return
+    print(f"[INFO] Profile {selected_profile} selected.")
 
     CSV_DIR.mkdir(exist_ok=True)
     DSD_DIR.mkdir(exist_ok=True)
 
-    plugin_list = find_mod_plugins(mods_dir)
+    plugin_list = find_mod_plugins_from_profile(input_base_dir, selected_profile)
     exclude_plugins = CONFIG["GENERAL"].get("EXCLUDE_PLUGINS")
     filtered_plugins = [
         plugin for plugin in plugin_list

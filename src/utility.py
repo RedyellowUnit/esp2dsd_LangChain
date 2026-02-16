@@ -49,28 +49,46 @@ def resolve_input_dir(argv: list[str], default_dir: Path) -> Path:
 
     return default_dir
 
-def find_mod_plugins(root_dir: Path) -> list[Path]:
+def find_mod_plugins_from_profile(base_path: Path, profile_name: str) -> list[Path]:
     """
-    2 階層目までのプラグイン探索
+    modlist.txt を参照してプラグインを優先順位付きで取得する。
+    上に書かれているModほど優先。
     """
-    plugins: list[Path] = []
 
-    # 1階層目を走査
-    for path in root_dir.iterdir():
+    modlist_path = base_path.joinpath("profiles").joinpath(profile_name).joinpath("modlist.txt")
+    if not modlist_path.exists():
+        raise FileNotFoundError(f"modlist.txt not found: {modlist_path}")
 
-        # ① 1階層目に直接プラグインがある場合
-        if path.is_file() and path.suffix.lower() in PLUGIN_EXTENSIONS:
-            plugins.append(path)
+    # 有効modのみ取得（順序保持）
+    mod_dirs: list[str] = []
+    with open(modlist_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            # MO2の左ペインで有効なModのみ
+            if line.startswith("+"):
+                mod_dirs.append(line[1:])
+
+    plugin_map: dict[str, Path] = {}
+
+     # ロードオーダー優先のプラグインから順に処理（先勝ち）
+    for mod_name in mod_dirs:
+        mod_folder_path = base_path.joinpath("mods").joinpath(mod_name)
+
+        if not mod_folder_path.exists() or not mod_folder_path.is_dir():
             continue
 
-        # ② 1階層目がディレクトリ（MO2の通常構成）
-        if path.is_dir():
-            for sub in path.iterdir():
-                if sub.is_file() and sub.suffix.lower() in PLUGIN_EXTENSIONS:
-                    plugins.append(sub)
+        # プラグインの正しいフォルダ階層
+        for file in mod_folder_path.iterdir():
+            if file.suffix.lower() in PLUGIN_EXTENSIONS:
+                if file.name not in plugin_map: # 先勝ち
+                    plugin_map[file.name] = file.resolve()
 
-    print(f"[Info] Plugins found: {len(plugins)}")
-    return plugins
+    print(f"[INFO] Found {len(plugin_map)} unique plugins after priority resolution")
+
+    return list(plugin_map.values())
+
 
 # Utility
 def normalize_text_list(text_list):
