@@ -200,7 +200,7 @@ import configparser
 # Config
 def get_Config_Parser() -> configparser.ConfigParser:
     # Config
-    config_file = get_runtime_base_path().joinpath("config").joinpath("setting.ini")
+    config_file = get_runtime_base_path().joinpath("translate_plugin2dsd_config.ini")
     CONFIG = configparser.ConfigParser()
     CONFIG.read(config_file, encoding="utf-8")
 
