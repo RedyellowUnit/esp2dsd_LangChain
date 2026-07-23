@@ -161,6 +161,8 @@ LLM の前に、[skyrimspecialedition.2game.info](https://skyrimspecialedition.2
 
 ダウンロード失敗・サイト不通・非対応アーカイブの場合は、**翻訳処理全体を中断**します。
 
+2game への HTTP リクエストは、設定 `[TWOGAME] REQUEST_INTERVAL_SEC`（デフォルト 1.0 秒）の間隔でレート制限されます（プラグイン並列時もプロセス全体で共有）。
+
 ### 対象 XML
 
 xTranslator の `SSTXMLRessources` 形式（`.xml`）のみ。
@@ -205,6 +207,12 @@ Something.esp  →  Something_english_japanese.xml
 | `EXCLUDE_PLUGINS` | 翻訳しないプラグイン名の一覧 |
 
 `TARGET_TYPE` / `EXCLUDE_PLUGINS` は疑似 dict 形式で記述します（右辺の値はダミーで、キーの有無のみが意味を持ちます）。
+
+### `[TWOGAME]`
+
+| キー | 説明 |
+|------|------|
+| `REQUEST_INTERVAL_SEC` | 2game への HTTP リクエスト最小間隔（秒）。並列処理でも全体共有。`0` で無効。デフォルト `1.0` |
 
 ### `[LLM]`
 

@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from urllib.request import Request, build_opener, HTTPCookieProcessor
 import pandas as pd
 
 from src.app_logger import get_logger
+from src.utility import get_Config_Parser
 
 TWOGAME_BASE = "https://skyrimspecialedition.2game.info"
 DETAIL_URL_TEMPLATE = TWOGAME_BASE + "/detail.php?id={mod_id}"
@@ -29,10 +31,47 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+DEFAULT_REQUEST_INTERVAL_SEC = 1.0
 
 _cache_locks_guard = threading.Lock()
 _cache_locks: dict[str, threading.Lock] = {}
 _py7zz_binary_ready = False
+
+# 2game への全 HTTP を横断するレート制限（並列プラグイン処理でも共有）
+_rate_lock = threading.Lock()
+_last_request_monotonic = 0.0
+
+
+def _get_request_interval_sec() -> float:
+    """
+    リクエスト最小間隔（秒）。
+    translate_plugin2dsd_config.ini の [TWOGAME] REQUEST_INTERVAL_SEC
+    """
+    try:
+        config = get_Config_Parser()
+        if config.has_option("TWOGAME", "REQUEST_INTERVAL_SEC"):
+            return max(0.0, config.getfloat("TWOGAME", "REQUEST_INTERVAL_SEC"))
+    except Exception:
+        pass
+    return DEFAULT_REQUEST_INTERVAL_SEC
+
+
+def _wait_for_rate_limit() -> None:
+    """前回リクエストから設定間隔が空くまで待つ（プロセス全体で直列化）。"""
+    global _last_request_monotonic
+
+    interval = _get_request_interval_sec()
+    if interval <= 0:
+        return
+
+    log = get_logger()
+    with _rate_lock:
+        now = time.monotonic()
+        wait = interval - (now - _last_request_monotonic)
+        if wait > 0:
+            log.info("2game rate limit: waiting %.2fs (interval=%.2fs)", wait, interval)
+            time.sleep(wait)
+        _last_request_monotonic = time.monotonic()
 
 
 def _lock_for_mod(mod_id: str) -> threading.Lock:
@@ -166,6 +205,7 @@ def normalize_editor_id(value: str | None) -> str:
 
 def _http_get(opener, url: str, referer: str | None = None) -> tuple[bytes, str]:
     log = get_logger()
+    _wait_for_rate_limit()
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "*/*",
