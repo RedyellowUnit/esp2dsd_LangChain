@@ -6,6 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
 from typing import List
 from src.utility import get_Config_Parser,normalize_text_list, build_id_map, count_tokens, chunk_by_token_limit, build_prompt_map
+from src.app_logger import get_logger
 
 # CommandPrompt:
 #   > setx OPENAI_API_KEY "sk-xxxxxxxx"
@@ -50,6 +51,7 @@ MAX_RETRY:int = CONFIG.getint("LLM", "MAX_RETRY")
 PROMPT_MAP = build_prompt_map(CONFIG)
 
 def translate_with_retry(pipeline, input_items, record_type, batch_no, token_batch_no):
+    log = get_logger()
     remaining = input_items
     final_results = {}
 
@@ -58,11 +60,31 @@ def translate_with_retry(pipeline, input_items, record_type, batch_no, token_bat
             break
 
         try:
+            log.debug(
+                "LLM invoke begin Type=%s Batch=%s TokenBatch=%s Retry=%s items=%s",
+                record_type,
+                batch_no,
+                token_batch_no,
+                retry,
+                len(remaining),
+            )
             result: TranslationResult = pipeline.invoke({"text": remaining})
+            log.debug(
+                "LLM invoke done Type=%s Batch=%s TokenBatch=%s Retry=%s returned=%s",
+                record_type,
+                batch_no,
+                token_batch_no,
+                retry,
+                len(result.translations),
+            )
         except Exception as e:
-            print(
-                f"[ERROR] Type={record_type} Batch={batch_no} "
-                f"TokenBatch={token_batch_no} Retry={retry} API error: {e}"
+            log.error(
+                "Type=%s Batch=%s TokenBatch=%s Retry=%s API error: %s",
+                record_type,
+                batch_no,
+                token_batch_no,
+                retry,
+                e,
             )
             continue
 
@@ -77,10 +99,13 @@ def translate_with_retry(pipeline, input_items, record_type, batch_no, token_bat
         ]
 
         if remaining:
-            print(
-                f"[WARN] Type={record_type} Batch={batch_no} "
-                f"TokenBatch={token_batch_no} Retry={retry} "
-                f"Missing IDs={len(remaining)}"
+            log.warning(
+                "Type=%s Batch=%s TokenBatch=%s Retry=%s Missing IDs=%s",
+                record_type,
+                batch_no,
+                token_batch_no,
+                retry,
+                len(remaining),
             )
 
     return final_results, remaining
@@ -176,14 +201,17 @@ def call_llm_api_batch(text_list, record_type, batch_no, translation_cache):
 
 
 def _process_one_batch(df, record_type, batch_items, batch_no, translation_cache: TranslationCache):
+    log = get_logger()
     idx_chunk = [i for i, _ in batch_items]
     text_chunk = [t for _, t in batch_items]
 
-    print(
-        f"[INFO] "
-        f"Type={record_type} Batch={batch_no} "
-        f"対象index={idx_chunk[0]}～{idx_chunk[-1]} "
-        f"件数={len(text_chunk)} API翻訳開始"
+    log.info(
+        "Type=%s Batch=%s index=%s～%s count=%s API translate begin",
+        record_type,
+        batch_no,
+        idx_chunk[0],
+        idx_chunk[-1],
+        len(text_chunk),
     )
 
     translated_chunk = call_llm_api_batch(
@@ -195,24 +223,57 @@ def _process_one_batch(df, record_type, batch_items, batch_no, translation_cache
 
     for i, translated_text in zip(idx_chunk, translated_chunk):
         df.at[i, "Translated"] = translated_text
-        #print(f"[Debug] {df.at[i, "string"]}  {translated_text}")
+
+    log.info("Type=%s Batch=%s API translate done", record_type, batch_no)
 
 def translate_csv_llm(csv_path: Path)->bool:
     """
     CSVを読み込み、LLM(API)に翻訳を依頼する。
     CSV列に Translated を追加し、翻訳テキストを保存する。
+    既に Translated がある行は保持し、空欄のみ翻訳する。
     """
+    log = get_logger()
     if not csv_path.exists():
+        log.error("CSV not found for LLM: %s", csv_path)
         return False
 
+    log.info("LLM translate begin: %s", csv_path.name)
     df = pd.read_csv(csv_path)
-    df["Translated"] = None
+    if "Translated" not in df.columns:
+        df["Translated"] = None
+        log.debug("Translated column created: %s", csv_path.name)
+    else:
+        already = df["Translated"].apply(
+            lambda v: v is not None
+            and not (isinstance(v, float) and pd.isna(v))
+            and str(v).strip() != ""
+            and str(v).strip().lower() != "nan"
+        ).sum()
+        log.info(
+            "LLM translate: %s rows=%s already_translated=%s",
+            csv_path.name,
+            len(df),
+            int(already),
+        )
 
     # Cache plugin単位（スレッドローカル）
     translation_cache = TranslationCache()
 
     for record_type, group_df in df.groupby("type"):
-        print(f"[INFO] {csv_path.name} Type処理開始: {record_type} 件数={len(group_df)}")
+        pending = 0
+        for idx in group_df.index.tolist():
+            existing = df.at[idx, "Translated"]
+            if existing is None or (isinstance(existing, float) and pd.isna(existing)) or str(existing).strip() == "":
+                pending += 1
+        log.info(
+            "%s Type=%s rows=%s pending_llm=%s",
+            csv_path.name,
+            record_type,
+            len(group_df),
+            pending,
+        )
+        if pending == 0:
+            continue
 
         # index と text をペアで保持
         items = list(zip(group_df.index.tolist(), group_df["string"].tolist()))
@@ -222,6 +283,12 @@ def translate_csv_llm(csv_path: Path)->bool:
         current_tokens = 0
 
         for idx, text in items:
+            # 既に Translated がある行はスキップ（2game 適用済みなど）
+            existing = df.at[idx, "Translated"]
+            if existing is not None and not (isinstance(existing, float) and pd.isna(existing)):
+                if str(existing).strip() != "":
+                    continue
+
             text_tokens = count_tokens(text, LLM_MODEL)
 
             # 単文が上限超え → 単独バッチ
@@ -257,9 +324,9 @@ def translate_csv_llm(csv_path: Path)->bool:
                 df, record_type, current_batch, batch_no, translation_cache
             )
 
-        #print(f"[INFO] Type毎の処理完了: {record_type}")
-
+    log.info("LLM CSV write begin: %s", csv_path.name)
     df.to_csv(csv_path, index=False)
+    log.info("LLM translate done: %s", csv_path.name)
 
     return True # 翻訳の成功失敗は、Csvを検索して判断すること。自動判定はできない。
 

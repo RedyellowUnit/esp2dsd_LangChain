@@ -22,8 +22,9 @@ MO2 ルート（mods / profiles）
         ▼
  並列処理（MAX_PARALLEL）
    ├─ 1. 文字列抽出 → Translated_Csv/{plugin}.csv
-   ├─ 2. LLM 翻訳 → CSV に Translated 列を追加
-   └─ 3. DSD 変換 → Translated_DSD/{plugin}/{plugin}.json
+   ├─ 2. 2game 既存翻訳を適用（空欄のみ）
+   ├─ 3. 未翻訳分を LLM 翻訳 → CSV の Translated 列
+   └─ 4. DSD 変換 → Translated_DSD/{plugin}/{plugin}.json
         │
         ▼
  タイムスタンプを保存（次回の差分判定用）
@@ -36,7 +37,8 @@ MO2 ルート（mods / profiles）
 | Python | 3.13 |
 | OS | Windows（`initialize.bat` / `build.bat` / Tkinter GUI 前提） |
 | API | OpenAI API Key（環境変数 `OPENAI_API_KEY`） |
-| 入力構成 | MO2 互換ディレクトリ（`mods/` と `profiles/<name>/modlist.txt`） |
+| ネットワーク | [2game.info](https://skyrimspecialedition.2game.info/) へのアクセス（既存日本語翻訳の取得） |
+| 入力構成 | MO2 互換ディレクトリ（`mods/` と `profiles/<name>/modlist.txt`、各 Mod に `meta.ini`） |
 
 ## セットアップ
 
@@ -85,6 +87,8 @@ build.bat
 
 `translate_plugin2dsd.spec` を用いて exe をビルドします。exe 実行時は、exe と同じフォルダを書き込みベース（CSV / DSD / 設定 / タイムスタンプ）として使います。
 
+RAR 展開用に `7zz.exe` / `7z.dll` を exe へ同梱します。万一 RAR で失敗する場合は、`build.bat` が `dist\` にコピーする `7zz.exe` と `7z.dll` を exe と同じフォルダへ置いてください。
+
 ## 入出力
 
 ### 入力ディレクトリ構成
@@ -107,7 +111,9 @@ build.bat
 |------|------|
 | `Translated_Csv/{plugin名}.csv` | 抽出文字列＋翻訳結果 |
 | `Translated_DSD/{plugin名}/{plugin名}.json` | DSD 用 JSON |
+| `Downloaded_Translations/{modid}/` | 2game から取得した翻訳アーカイブのキャッシュ |
 | `plugin_timestamps.txt` | 処理済みプラグインの mtime 一覧 |
+| `esp2dsd.log` | 実行ログ（段階・スレッド名・エラー詳細） |
 
 実行ベースパス:
 
@@ -138,6 +144,46 @@ build.bat
   "status": "TranslationComplete"
 }
 ```
+
+## 2game 既存翻訳の適用
+
+LLM の前に、[skyrimspecialedition.2game.info](https://skyrimspecialedition.2game.info/) 上の日本語化ファイルを検索・適用します（常時有効・設定スイッチなし）。
+
+### 取得
+
+1. プラグイン所在 Mod の `meta.ini` から `modid` を読む  
+   （例: Nexus `.../mods/94505` → 2game `detail.php?id=94505`）
+2. 詳細ページの `jp_download.php` リンクを**すべて**取得（表示上側＝新しい）
+3. zip / 7z / rar をダウンロードし `Downloaded_Translations/{modid}/` に展開
+4. 同じ `modid` フォルダが既にあれば再ダウンロードしない（キャッシュ優先）
+
+`meta.ini` / `modid` が無い、または `jp_download.php` が無い場合はスキップして LLM のみです。
+
+ダウンロード失敗・サイト不通・非対応アーカイブの場合は、**翻訳処理全体を中断**します。
+
+### 対象 XML
+
+xTranslator の `SSTXMLRessources` 形式（`.xml`）のみ。
+
+ファイル名ルール:
+
+```text
+Something.esp  →  Something_english_japanese.xml
+```
+
+アーカイブ内に一致 XML が無い場合、そのアーカイブからは適用しません。全アーカイブで見つからなければ LLM のみです。
+
+複数アーカイブがある場合はすべて読み、**新しい側を優先**してマージします。
+
+### CSV へのマッチ
+
+`Translated` が空の行だけ埋めます。
+
+1. `editor_id` + `type` + `index`  
+   （XML の `EDID` + `REC`（`QUST:NNAM` → `QUST NNAM`）+ `REC/@id`。id 無しは `0`）
+2. だめなら原文 `string` と XML `Source` の完全一致
+
+翻訳が空文字のエントリは未翻訳扱い（LLM へ）。
 
 ## 差分処理と除外
 
@@ -174,8 +220,9 @@ build.bat
 
 種別ごとのプロンプトは `PROMPT_` 接頭辞を除き `_` を空白に置換した名前（`DIAL FULL` など）でマッチします。
 
-## 翻訳処理の仕様
+## 翻訳処理の仕様（LLM）
 
+- 2game で埋まらなかった（`Translated` が空の）行だけを対象にします。
 - CSV を `type` ごとにグループ化し、トークン上限に収まるようバッチ分割して LLM に送ります。
 - LangChain の Structured Output（Pydantic）で  
   `{ "translations": [ { "id", "text" }, ... ] }` 形式を強制します。
@@ -191,8 +238,10 @@ build.bat
 | `main.py` | エントリポイント。プロファイル選択・差分判定・並列オーケストレーション |
 | `src/select_profile_dialog.py` | プロファイル選択ダイアログ（Tkinter） |
 | `src/extract_strings_from_plugins.py` | `sse-plugin-interface` による文字列抽出 → CSV |
-| `src/translate_csv_llm.py` | LangChain / OpenAI による CSV 翻訳 |
+| `src/twogame_translation.py` | 2game から xTranslator XML を取得し CSV に適用 |
+| `src/translate_csv_llm.py` | LangChain / OpenAI による CSV 翻訳（未翻訳行のみ） |
 | `src/csv2dsd_converter.py` | CSV → DSD JSON 変換 |
+| `src/app_logger.py` | コンソール＋`esp2dsd.log` への診断ログ |
 | `src/utility.py` | パス解決、modlist 解析、トークン分割、設定読込、タイムスタンプ I/O |
 | `config/` | 用途別のプロンプト／対象種別プリセット例（参考用） |
 
@@ -203,6 +252,7 @@ build.bat
 - `langchain` / `langchain-core` / `langchain-openai`
 - `pandas` / `pydantic` / `tiktoken` / `python-dotenv`
 - `sse-plugin-interface`（プラグイン文字列抽出）
+- `py7zr`（7z 展開）/ `py7zz`（rar 展開、7zz 同梱）
 - `pyinstaller`（配布用ビルド）
 
 ## ライセンス

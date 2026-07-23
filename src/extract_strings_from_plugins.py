@@ -2,6 +2,7 @@ import configparser
 import csv
 from pathlib import Path
 from src.utility import get_Config_Parser
+from src.app_logger import get_logger
 from sse_plugin_interface.plugin import SSEPlugin
 from sse_plugin_interface.plugin_string import PluginString
 
@@ -10,16 +11,20 @@ CONFIG: configparser.ConfigParser = get_Config_Parser()
 
 def extract_translatable_strings(plugin_path: Path, target_type_map: dict[str,str]):
     #プラグインから翻訳対象の文字列のみ抽出、ConfigのTARGET_TYPEで絞り込み
-
+    log = get_logger()
+    log.debug("[%s] SSEPlugin.from_file begin", plugin_path.name)
     plugin = SSEPlugin.from_file(plugin_path)
+    log.debug("[%s] extract_strings begin", plugin_path.name)
     all_strings = plugin.extract_strings()
+    log.debug("[%s] extract_strings done total=%s", plugin_path.name, len(all_strings))
     translatable_strings = [s for s in all_strings if isinstance(s, PluginString) and s.type in target_type_map]
-    print(f"[Info] Translatable strings filtered: {len(translatable_strings)}")
+    log.info("[%s] Translatable strings filtered: %s", plugin_path.name, len(translatable_strings))
 
     return translatable_strings
 
 def extract_save_csv(plugin_path: Path, output_dir: Path)->bool:
-    print(f"[Info] Loading plugin: {plugin_path.name}")
+    log = get_logger()
+    log.info("[%s] Loading plugin for CSV extract", plugin_path.name)
     try:
         csv_path = output_dir.joinpath(f"{plugin_path.name}.csv")
 
@@ -30,7 +35,7 @@ def extract_save_csv(plugin_path: Path, output_dir: Path)->bool:
 
             strings = extract_translatable_strings(plugin_path, CONFIG["GENERAL"].get("TARGET_TYPE"))
             if not strings:
-                print(f"[SKIP] {plugin_path.name}: No translatable strings")
+                log.info("[%s] No translatable strings (CSV header only)", plugin_path.name)
                 return True
             
             for s in strings:
@@ -50,9 +55,9 @@ def extract_save_csv(plugin_path: Path, output_dir: Path)->bool:
                     getattr(s, "type", ""),
                     getattr(s, "string", "")
                 ])
+        log.info("[%s] CSV written: %s rows=%s", plugin_path.name, csv_path, len(strings))
     except Exception as e:
-        print(f"[ERROR:{plugin_path.name}] {e}")
+        log.exception("[%s] extract CSV error: %s", plugin_path.name, e)
         return False
 
     return True
-

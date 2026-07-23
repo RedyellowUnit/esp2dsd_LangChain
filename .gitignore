@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# esp2dsd runtime outputs
+Translated_Csv/
+Translated_DSD/
+Downloaded_Translations/
+plugin_timestamps.txt
+esp2dsd.log
+_tmp_*/

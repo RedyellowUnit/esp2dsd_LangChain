@@ -1,6 +1,7 @@
 import csv
 import json
 from pathlib import Path
+from src.app_logger import get_logger
 
 def normalize_int(value, default=0):
     if value is None:
@@ -32,12 +33,14 @@ def convert_csv_to_dsd(csv_path: Path, json_path: Path):
     CSV列: editor_id, form_id, index, type, string, Translated
     JSON列: editor_id, form_id, index, type, original, string, status
     """
+    log = get_logger()
     data = []
 
     if not csv_path.exists():
-        print(f"[Debug] Faaaail. {csv_path}")
+        log.error("DSD convert failed, CSV missing: %s", csv_path)
         return False
 
+    log.info("DSD convert begin: %s -> %s", csv_path.name, json_path)
     with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -57,6 +60,7 @@ def convert_csv_to_dsd(csv_path: Path, json_path: Path):
             data.append(item)
     # Csvデータ行がすべて空の場合は何もしない
     if not data:
+        log.info("DSD convert skip (no data rows): %s", csv_path.name)
         return True
 
     # JSON 出力（UTF-8, インデント付き）
@@ -64,5 +68,5 @@ def convert_csv_to_dsd(csv_path: Path, json_path: Path):
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     
-    print(f"[Info] DSD converted successfully: {json_path}")
+    log.info("DSD convert done: %s entries=%s", json_path, len(data))
     return True
