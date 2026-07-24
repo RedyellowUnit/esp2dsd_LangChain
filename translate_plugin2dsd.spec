@@ -3,8 +3,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
 
-datas = [('config', 'config')]
-datas += collect_data_files("tiktoken")
+datas = collect_data_files("tiktoken")
 datas += collect_data_files("tiktoken_ext")
 
 binaries = []
