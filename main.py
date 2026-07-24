@@ -2,7 +2,6 @@ import sys
 from pathlib import Path
 import configparser
 import concurrent.futures
-import threading
 import traceback
 
 from src.extract_strings_from_plugins import extract_save_csv
@@ -22,10 +21,6 @@ TIMESTAMP_FILE: Path = BASE_PATH.joinpath("plugin_timestamps.txt")
 # Config
 CONFIG: configparser.ConfigParser = get_Config_Parser()
 
-# 並列処理中の全体中断フラグ（2game DL 失敗時）
-_abort_event = threading.Event()
-_abort_error: list[BaseException] = []
-
 
 def process_plugin(plugin: Path) -> None:
     """
@@ -34,10 +29,6 @@ def process_plugin(plugin: Path) -> None:
     """
     log = get_logger()
     name = plugin.name
-
-    if _abort_event.is_set():
-        log.info("[%s] skipped (abort already set)", name)
-        return
 
     try:
         log.info("[%s] === START === path=%s", name, plugin)
@@ -48,24 +39,18 @@ def process_plugin(plugin: Path) -> None:
             return
         log.info("[%s] STEP1 extract CSV done", name)
 
-        if _abort_event.is_set():
-            log.info("[%s] abort after extract", name)
-            return
-
         csv_path = CSV_DIR.joinpath(f"{plugin.name}.csv").resolve()
         log.info("[%s] STEP2 2game apply begin csv=%s", name, csv_path)
         try:
             filled = apply_2game_translation_to_csv(plugin, csv_path, TWOGAME_DIR)
             log.info("[%s] STEP2 2game apply done filled=%s", name, filled)
         except TwoGameDownloadError as e:
-            log.error("[%s] STEP2 2game FATAL: %s", name, e)
-            _abort_error.append(e)
-            _abort_event.set()
-            raise
-
-        if _abort_event.is_set():
-            log.info("[%s] abort after 2game", name)
-            return
+            # 2game 失敗は当該プラグインの 2game 適用のみスキップし、LLM 以降は継続
+            log.warning(
+                "[%s] STEP2 2game failed, skip 2game and continue with LLM: %s",
+                name,
+                e,
+            )
 
         log.info("[%s] STEP3 LLM translate begin", name)
         translate_result = translate_csv_llm(csv_path)
@@ -83,17 +68,12 @@ def process_plugin(plugin: Path) -> None:
 
         log.info("[%s] === OK Finished ===", name)
 
-    except TwoGameDownloadError:
-        raise
     except Exception as e:
         log.exception("[%s] Exception: %s", name, e)
         traceback.print_exc()
 
 
 def main():
-    _abort_event.clear()
-    _abort_error.clear()
-
     setup_logging(BASE_PATH)
     log = get_logger()
 
@@ -150,7 +130,6 @@ def main():
 
     # 並列実行
     max_workers = min(CONFIG.getint("GENERAL", "MAX_PARALLEL"), len(filtered_plugins))
-    fatal = False
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=max_workers,
         thread_name_prefix="plugin",
@@ -160,19 +139,7 @@ def main():
             for plugin in filtered_plugins]
 
         for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except TwoGameDownloadError:
-                fatal = True
-                _abort_event.set()
-                for f in futures:
-                    f.cancel()
-                break
-
-    if fatal or _abort_event.is_set():
-        err = _abort_error[0] if _abort_error else "unknown"
-        log.error("Translation aborted due to 2game failure: %s", err)
-        sys.exit(1)
+            future.result()
 
     save_current_timestamps(TIMESTAMP_FILE, plugin_list)
     log.info("All done. Timestamps saved.")

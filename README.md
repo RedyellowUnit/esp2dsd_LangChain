@@ -159,7 +159,7 @@ LLM の前に、[skyrimspecialedition.2game.info](https://skyrimspecialedition.2
 
 `meta.ini` / `modid` が無い、または `jp_download.php` が無い場合はスキップして LLM のみです。
 
-ダウンロード失敗・サイト不通・非対応アーカイブの場合は、**翻訳処理全体を中断**します。
+ダウンロード失敗・サイト不通・非対応アーカイブの場合は、当該プラグインの 2game 適用を**スキップ**し、LLM 翻訳以降の処理を継続します。
 
 2game への HTTP リクエストは、設定 `[TWOGAME] REQUEST_INTERVAL_SEC`（デフォルト 1.0 秒）の間隔でレート制限されます（プラグイン並列時もプロセス全体で共有）。
 

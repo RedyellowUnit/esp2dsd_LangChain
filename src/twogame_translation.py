@@ -141,7 +141,7 @@ def ensure_py7zz_binary() -> None:
 
 
 class TwoGameDownloadError(Exception):
-    """ダウンロード失敗・サイト不通など、翻訳処理全体を中断すべきエラー。"""
+    """ダウンロード失敗・サイト不通など、当該プラグインの 2game 適用をスキップすべきエラー。"""
 
 
 @dataclass
@@ -626,7 +626,7 @@ def apply_2game_translation_to_csv(
     """
     2game 翻訳を CSV に適用する。
     - modid 無し / リンク無し / 一致 XML 無し → 0件（LLM へフォールバック）
-    - DL 失敗 → TwoGameDownloadError（呼び出し側で全体中断）
+    - DL / 適用失敗 → TwoGameDownloadError（呼び出し側でスキップして LLM 継続）
     """
     log = get_logger()
     name = plugin_path.name
